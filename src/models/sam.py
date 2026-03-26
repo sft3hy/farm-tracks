@@ -1,6 +1,17 @@
 import torch
 import torch.nn as nn
 from transformers import SamModel, SamProcessor
+import numpy as np
+
+def to_cpu(data):
+    """Recursively moves all tensors to CPU/Numpy for SAM processor compatibility."""
+    if torch.is_tensor(data):
+        return data.detach().cpu().numpy()
+    elif isinstance(data, list):
+        return [to_cpu(x) for x in data]
+    elif isinstance(data, dict):
+        return {k: to_cpu(v) for k, v in data.items()}
+    return data
 
 class SAMFarmTrack(nn.Module):
     """
@@ -20,11 +31,9 @@ class SAMFarmTrack(nn.Module):
             param.requires_grad = False
 
     def forward(self, input_images, input_points=None):
-        # Move inputs to CPU for processing if they are tensors on a device
-        if torch.is_tensor(input_images):
-            input_images = input_images.cpu().numpy()
-        if input_points is not None and torch.is_tensor(input_points):
-            input_points = input_points.cpu().numpy()
+        # SAM processor requires inputs on CPU for preprocessing
+        input_images = to_cpu(input_images)
+        input_points = to_cpu(input_points) if input_points is not None else None
 
         # inputs can be pre-processed by SamProcessor
         inputs = self.processor(input_images, input_points=input_points, return_tensors="pt")
