@@ -9,23 +9,32 @@ from models.segformer import SegformerFarmTrack
 import os
 
 # Reuse AgVisionDictDataset and FarmTrackDataModule logic from train.py
-# (Wait, maybe I should extract them to a common data file? 
+# (Wait, maybe I should extract them to a common data file?
 # The user asked for 3 NEW python scripts, so I will define them here to be self-contained or import if possible.)
+
 
 class AgVisionDictDataset(Dataset):
     def __init__(self, ds, index_list, mask_type="planter_skip"):
         self.ds = ds
         self.index_list = index_list
         self.mask_type = mask_type
-        self.transform_rgb = T.Compose([
-            T.ToTensor(),
-            T.Resize((512, 512), antialias=True),
-            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        self.transform_mask = T.Compose([
-            T.ToTensor(),
-            T.Resize((512, 512), antialias=True, interpolation=T.InterpolationMode.NEAREST),
-        ])
+        self.transform_rgb = T.Compose(
+            [
+                T.ToTensor(),
+                T.Resize((512, 512), antialias=True),
+                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+        self.transform_mask = T.Compose(
+            [
+                T.ToTensor(),
+                T.Resize(
+                    (512, 512),
+                    antialias=True,
+                    interpolation=T.InterpolationMode.NEAREST,
+                ),
+            ]
+        )
 
     def __len__(self):
         return len(self.index_list)
@@ -51,6 +60,7 @@ class AgVisionDictDataset(Dataset):
 
         return {"image": img_tensor, "mask": mask_tensor}
 
+
 class FarmTrackDataModule(pl.LightningDataModule):
     def __init__(self, batch_size=4, mask_type="planter_skip"):
         super().__init__()
@@ -58,18 +68,31 @@ class FarmTrackDataModule(pl.LightningDataModule):
         self.mask_type = mask_type
 
     def setup(self, stage=None):
-        features = Features({"png": HFImage(), "jpg": HFImage(), "__key__": Value("string"), "__url__": Value("string")})
-        self.ds = load_dataset("shi-labs/Agriculture-Vision", split="train", features=features)
-        
+        features = Features(
+            {
+                "png": HFImage(),
+                "jpg": HFImage(),
+                "__key__": Value("string"),
+                "__url__": Value("string"),
+            }
+        )
+        self.ds = load_dataset(
+            "shi-labs/Agriculture-Vision", split="train", features=features
+        )
+
         mapping = {}
         for i, sample in enumerate(self.ds):
             key = sample.get("__key__", "")
-            if not key: continue
+            if not key:
+                continue
             parts = key.split("/")
             file_id, folder = parts[-1], parts[-2] if len(parts) >= 2 else None
-            if file_id not in mapping: mapping[file_id] = {}
-            if folder == "rgb": mapping[file_id]["rgb"] = i
-            else: mapping[file_id][folder] = i
+            if file_id not in mapping:
+                mapping[file_id] = {}
+            if folder == "rgb":
+                mapping[file_id]["rgb"] = i
+            else:
+                mapping[file_id][folder] = i
 
         self.index_list = [(k, v) for k, v in mapping.items() if "rgb" in v]
         split_point = int(0.8 * len(self.index_list))
@@ -77,10 +100,21 @@ class FarmTrackDataModule(pl.LightningDataModule):
         self.val_idx = self.index_list[split_point:]
 
     def train_dataloader(self):
-        return DataLoader(AgVisionDictDataset(self.ds, self.train_idx, self.mask_type), batch_size=self.batch_size, shuffle=True, num_workers=4)
+        return DataLoader(
+            AgVisionDictDataset(self.ds, self.train_idx, self.mask_type),
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=4,
+        )
 
     def val_dataloader(self):
-        return DataLoader(AgVisionDictDataset(self.ds, self.val_idx, self.mask_type), batch_size=self.batch_size, shuffle=False, num_workers=4)
+        return DataLoader(
+            AgVisionDictDataset(self.ds, self.val_idx, self.mask_type),
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,
+        )
+
 
 class SegformerModule(pl.LightningModule):
     def __init__(self, learning_rate=6e-5):
@@ -110,11 +144,12 @@ class SegformerModule(pl.LightningModule):
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
 
+
 if __name__ == "__main__":
     os.makedirs("models/weights", exist_ok=True)
     module = SegformerModule()
-    datamodule = FarmTrackDataModule(batch_size=4) # Smaller batch for T4 optimization
-    
+    datamodule = FarmTrackDataModule(batch_size=4)  # Smaller batch for T4 optimization
+
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath="models/weights/",
         filename="segformer-farmtrack-{epoch:02d}-{val_loss:.2f}",
@@ -127,12 +162,12 @@ if __name__ == "__main__":
         callbacks=[checkpoint_callback],
         accelerator="cuda" if torch.cuda.is_available() else "auto",
         devices=1,
-        precision="16-mixed", # T4 optimization
+        precision="16-mixed",  # T4 optimization
     )
-    
+
     print("🚀 Starting CUDA SegFormer Training...")
     trainer.fit(module, datamodule=datamodule)
-    
+
     final_path = "models/weights/segformer_farmtrack_final.pth"
     torch.save(module.model.state_dict(), final_path)
     print(f"✅ Training Complete! Saved to {final_path}")

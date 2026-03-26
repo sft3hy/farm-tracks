@@ -100,7 +100,10 @@ class SAMFarmTrackModule(pl.LightningModule):
         return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
 
 if __name__ == "__main__":
-    from src.train import FarmTrackDataModule # Import the mapping logic
+    try:
+        from train import FarmTrackDataModule
+    except ImportError:
+        from src.train import FarmTrackDataModule
     
     # We need to ensure we use the specialized SAM dataset
     class SAMDataModule(FarmTrackDataModule):
