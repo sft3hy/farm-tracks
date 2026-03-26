@@ -20,6 +20,12 @@ class SAMFarmTrack(nn.Module):
             param.requires_grad = False
 
     def forward(self, input_images, input_points=None):
+        # Move inputs to CPU for processing if they are tensors on a device
+        if torch.is_tensor(input_images):
+            input_images = input_images.cpu().numpy()
+        if input_points is not None and torch.is_tensor(input_points):
+            input_points = input_points.cpu().numpy()
+
         # inputs can be pre-processed by SamProcessor
         inputs = self.processor(input_images, input_points=input_points, return_tensors="pt")
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
