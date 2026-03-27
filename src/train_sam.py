@@ -42,16 +42,17 @@ class AgVisionSAMDataset(Dataset):
             mask = np.array(mask_img.convert("L"))
             mask = (mask > 127).astype(np.float32)
 
-        # For SAM fine-tuning, we often use a single central point as a dummy prompt 
-        # to focus on the whole image's primary features if no specific point is given.
-        # Or we can provide a point that is definitely on the "track" if one exists.
-        input_point = [[256, 256]] # Center point default
+        # Input points and labels for SAM
+        # input_point: [[x, y]] -> shape (num_points, 2)
+        # input_label: [1] -> shape (num_points,) -> 1 for foreground
+        input_point = [[256, 256]] 
+        input_label = [1]
         
-        # SAM model expectations from processor
         return {
             "image": image, # (H, W, 3)
             "mask": torch.from_numpy(mask).unsqueeze(0), # (1, H, W)
-            "input_points": [input_point]
+            "input_points": input_point,
+            "input_labels": input_label
         }
 
 class SAMFarmTrackModule(pl.LightningModule):
@@ -63,21 +64,18 @@ class SAMFarmTrackModule(pl.LightningModule):
         self.bce_loss = nn.BCEWithLogitsLoss()
 
     def training_step(self, batch, batch_idx):
-        images = batch["image"] # List of numpy arrays or tensor
-        # SAM processor doesn't like batched tensors directly in some versions, 
-        # so we process carefully.
-        
-        # Extract images and points from batch
+        # Extract images, points and labels from batch
+        # DataLoader will collate these into tensors/lists
         pixel_values = []
         for i in range(len(batch["image"])):
             img = batch["image"][i].cpu().numpy() if torch.is_tensor(batch["image"][i]) else batch["image"][i]
             pixel_values.append(img)
             
-        points = batch["input_points"] # List of points
+        points = batch["input_points"]
+        labels = batch["input_labels"]
         
         # Forward pass through the model's adapter
-        # Each call inside SAMFarmTrack uses the processor
-        logits = self.model(pixel_values, input_points=points) 
+        logits = self.model(pixel_values, input_points=points, input_labels=labels) 
         # logits shape: [B, 3, H, W] or [B, 1, H, W] depending on SAM output
         # SAM usually outputs 3 masks (multimask_output=True by default)
         

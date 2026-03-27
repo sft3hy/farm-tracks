@@ -30,13 +30,19 @@ class SAMFarmTrack(nn.Module):
         for param in self.model.prompt_encoder.parameters():
             param.requires_grad = False
 
-    def forward(self, input_images, input_points=None):
+    def forward(self, input_images, input_points=None, input_labels=None):
         # SAM processor requires inputs on CPU for preprocessing
         input_images = to_cpu(input_images)
         input_points = to_cpu(input_points) if input_points is not None else None
+        input_labels = to_cpu(input_labels) if input_labels is not None else None
 
         # inputs can be pre-processed by SamProcessor
-        inputs = self.processor(input_images, input_points=input_points, return_tensors="pt")
+        inputs = self.processor(
+            input_images, 
+            input_points=input_points, 
+            input_labels=input_labels,
+            return_tensors="pt"
+        )
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
         outputs = self.model(**inputs)
         return outputs.pred_masks
