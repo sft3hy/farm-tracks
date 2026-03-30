@@ -20,6 +20,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.models.unet import UNetFarmTrack
 from src.models.segformer import SegformerFarmTrack
+from src.models.sam import SAMFarmTrack
 
 # Configure logging
 logging.basicConfig(
@@ -241,6 +242,18 @@ def get_model(name: str = "unet"):
                 )
             )
             model_label = "SegformerFarmTrack"
+        elif name == "sam":
+            m = SAMFarmTrack()
+            weights_path = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "models",
+                    "weights",
+                    "sam_farmtrack_final.pth",
+                )
+            )
+            model_label = "SAMFarmTrack"
         else:
             raise ValueError(f"Unknown model name: {name}")
 
@@ -371,6 +384,18 @@ async def infer_image(file_id: str, model: str = "unet"):
         if segmentation_model is None:
             logger.warning("No model available, returning empty mask")
             mask = np.zeros((512, 512), dtype=np.uint8)
+        elif model == "sam":
+            # SAM expects raw-ish images (PIL or numpy) and points.
+            # We pass the PIL image directly and a central prompt point.
+            device = next(segmentation_model.parameters()).device
+            input_points = torch.tensor([[[256, 256]]], dtype=torch.float32).to(device)
+            input_labels = torch.tensor([[1]], dtype=torch.long).to(device)
+            
+            logits = segmentation_model(img.convert("RGB"), input_points=input_points, input_labels=input_labels)
+            probs = torch.sigmoid(logits).detach().cpu().squeeze().numpy()
+            
+            binary_mask = (probs > 0.5).astype(np.uint8)
+            mask = (binary_mask * 255).astype(np.uint8)
         else:
             device = next(segmentation_model.parameters()).device
             input_tensor = input_tensor.to(device)
@@ -464,10 +489,11 @@ async def compare_models(limit: int = 20):
     results = {
         "unet": {"mIoU": 0, "mF1": 0, "samples": 0},
         "segformer": {"mIoU": 0, "mF1": 0, "samples": 0},
+        "sam": {"mIoU": 0, "mF1": 0, "samples": 0},
     }
 
     for file_id, _ in test_subset:
-        for m_name in ["unet", "segformer"]:
+        for m_name in ["unet", "segformer", "sam"]:
             inf = await infer_image(file_id, model=m_name)
             metrics = inf.get("metrics")
             if metrics:
@@ -485,14 +511,14 @@ async def compare_models(limit: int = 20):
     return {
         "comparison": results,
         "winner_iou": (
-            "segformer"
-            if results["segformer"]["mIoU"] > results["unet"]["mIoU"]
-            else "unet"
+            "sam"
+            if results["sam"]["mIoU"] > results["segformer"]["mIoU"] and results["sam"]["mIoU"] > results["unet"]["mIoU"]
+            else "segformer" if results["segformer"]["mIoU"] > results["unet"]["mIoU"] else "unet"
         ),
         "winner_f1": (
-            "segformer"
-            if results["segformer"]["mF1"] > results["unet"]["mF1"]
-            else "unet"
+            "sam"
+            if results["sam"]["mF1"] > results["segformer"]["mF1"] and results["sam"]["mF1"] > results["unet"]["mF1"]
+            else "segformer" if results["segformer"]["mF1"] > results["unet"]["mF1"] else "unet"
         ),
         "sample_count": count,
     }
