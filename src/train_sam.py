@@ -51,8 +51,8 @@ class AgVisionSAMDataset(Dataset):
         return {
             "image": image, # (H, W, 3)
             "mask": torch.from_numpy(mask).unsqueeze(0), # (1, H, W)
-            "input_points": input_point,
-            "input_labels": input_label
+            "input_points": torch.tensor(input_point, dtype=torch.float32), # (1, 2)
+            "input_labels": torch.tensor(input_label, dtype=torch.long)    # (1,)
         }
 
 class SAMFarmTrackModule(pl.LightningModule):
@@ -80,8 +80,12 @@ class SAMFarmTrackModule(pl.LightningModule):
         # SAM usually outputs 3 masks (multimask_output=True by default)
         
         # Just take the first mask for simplicity in this baseline
+        # Expected logits shape: [B, C, H, W] where C is num_masks (usually 3)
         if logits.dim() == 4 and logits.shape[1] > 1:
             logits = logits[:, 0:1, :, :]
+        elif logits.dim() == 3:
+            # If (B, H, W), add channel dim
+            logits = logits.unsqueeze(1)
             
         # Target mask resize to match logits if necessary
         y = batch["mask"]

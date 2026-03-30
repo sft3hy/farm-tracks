@@ -19,6 +19,7 @@ import glob
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.models.unet import UNetFarmTrack
+from src.models.segformer import SegformerFarmTrack
 
 # Configure logging
 logging.basicConfig(
@@ -41,7 +42,7 @@ app.add_middleware(
 # --- Global State ---
 INDEX_LIST = None  # List of (file_id, {rgb_img: PIL.Image, mask_img: PIL.Image})
 DS = None  # Full dataset for random access
-model = None
+loaded_models = {}  # Cache for loaded model instances
 current_page = 0
 BATCH_SIZE = 10
 loading_status = {"state": "idle", "progress": 0, "total": 0, "found": 0}
@@ -71,16 +72,34 @@ def _load_dataset_background():
         loading_status["state"] = "loading_dataset"
 
     try:
+        # 1. Try to find the dataset path from environment or use a sensible default
+        base_cache = os.environ.get(
+            "HF_HOME", os.path.expanduser("~/.cache/huggingface")
+        )
+        ds_dir = os.path.join(base_cache, "datasets", "shi-labs___agriculture-vision")
+
         logger.info(
-            "Background: Loading Agriculture-Vision dataset from local arrow files..."
+            f"Background: Searching for Agriculture-Vision arrow files in {ds_dir}..."
         )
-        arrow_files = sorted(
-            glob.glob(
-                "/root/.cache/huggingface/datasets/shi-labs___agriculture-vision/default-5eb8c5b2696fef73/0.0.0/3d7d6c5fbf08e3d05aff6d04d0ea9dcb846b4acb/agriculture-vision-train-*.arrow"
-            )
-        )
+
+        # We use a recursive glob to find the arrow files regardless of the exact hash subfolder
+        arrow_pattern = os.path.join(ds_dir, "**/agriculture-vision-train-*.arrow")
+        arrow_files = sorted(glob.glob(arrow_pattern, recursive=True))
+
         if not arrow_files:
-            raise FileNotFoundError("Could not find local arrow files!")
+            # Fallback for older or different cache structures
+            logger.warning(
+                "Could not find arrow files with recursive glob. Checking legacy paths."
+            )
+            legacy_path = "/root/.cache/huggingface/datasets/shi-labs___agriculture-vision/default-5eb8c5b2696fef73/0.0.0/3d7d6c5fbf08e3d05aff6d04d0ea9dcb846b4acb/agriculture-vision-train-*.arrow"
+            arrow_files = sorted(glob.glob(legacy_path))
+
+        if not arrow_files:
+            raise FileNotFoundError(
+                f"Could not find local arrow files in {ds_dir} or fallback paths!"
+            )
+
+        # logger.info(f"Background: Found {len(arrow_files)} arrow files: {arrow_files}")
 
         DS = concatenate_datasets([Dataset.from_file(f) for f in arrow_files])
         total = len(DS)
@@ -190,11 +209,16 @@ def _load_dataset_background():
             loading_status["state"] = "error"
 
 
-def get_model():
-    global model
-    if model is None:
-        try:
-            model = UNetFarmTrack()
+def get_model(name: str = "unet"):
+    global loaded_models
+    name = name.lower()
+
+    if name in loaded_models:
+        return loaded_models[name]
+
+    try:
+        if name == "unet":
+            m = UNetFarmTrack()
             weights_path = os.path.abspath(
                 os.path.join(
                     os.path.dirname(__file__),
@@ -204,23 +228,43 @@ def get_model():
                     "unet_farmtrack_final.pth",
                 )
             )
-            if os.path.exists(weights_path):
-                model.load_state_dict(torch.load(weights_path, map_location="cpu"))
-                logger.info(
-                    f"SUCCESS: Loaded trained UNetFarmTrack weights from {weights_path}."
+            model_label = "UNetFarmTrack"
+        elif name == "segformer":
+            m = SegformerFarmTrack()
+            weights_path = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "models",
+                    "weights",
+                    "segformer_farmtrack_final.pth",
                 )
-            else:
-                logger.warning("UNetFarmTrack initialized with random weights!")
+            )
+            model_label = "SegformerFarmTrack"
+        else:
+            raise ValueError(f"Unknown model name: {name}")
 
-            if torch.backends.mps.is_available():
-                model = model.to("mps")
-            elif torch.cuda.is_available():
-                model = model.to("cuda")
-            model.eval()
-        except Exception as e:
-            logger.error(f"Failed to load UNetFarmTrack: {e}", exc_info=True)
-            model = None
-    return model
+        if os.path.exists(weights_path):
+            m.load_state_dict(torch.load(weights_path, map_location="cpu"))
+            logger.info(
+                f"SUCCESS: Loaded trained {model_label} weights from {weights_path}."
+            )
+        else:
+            logger.warning(
+                f"{model_label} initialized with random weights! Expected at {weights_path}"
+            )
+
+        if torch.backends.mps.is_available():
+            m = m.to("mps")
+        elif torch.cuda.is_available():
+            m = m.to("cuda")
+
+        m.eval()
+        loaded_models[name] = m
+        return m
+    except Exception as e:
+        logger.error(f"Failed to load model {name}: {e}", exc_info=True)
+        return None
 
 
 @app.on_event("startup")
@@ -239,8 +283,8 @@ async def get_status():
 
 
 @app.get("/batch")
-async def get_batch():
-    """Return the next page of 10 paired fields with thumbnails."""
+async def get_batch(model: str = "unet"):
+    """Return the next page of 10 paired fields with thumbnails and model-specific inference."""
     global current_page
 
     if INDEX_LIST is None or len(INDEX_LIST) == 0:
@@ -277,7 +321,7 @@ async def get_batch():
             {
                 "file_id": file_id,
                 "thumbnail": thumb_b64,
-                "inference": await infer_image(file_id),
+                "inference": await infer_image(file_id, model=model),
             }
         )
 
@@ -309,13 +353,13 @@ async def get_image(file_id: str):
 
 @torch.no_grad()
 @app.post("/infer/{file_id}")
-async def infer_image(file_id: str):
-    """Run inference on the RGB image and compare against GT mask."""
+async def infer_image(file_id: str, model: str = "unet"):
+    """Run inference on the RGB image using selected model and compare against GT mask."""
     try:
         if INDEX_LIST is None:
             raise HTTPException(status_code=503, detail="Dataset still loading")
 
-        segmentation_model = get_model()
+        segmentation_model = get_model(model)
 
         entry = next((v for k, v in INDEX_LIST if k == file_id), None)
         if entry is None or "rgb_img" not in entry:
@@ -404,6 +448,54 @@ async def infer_image(file_id: str):
     except Exception as e:
         logger.error(f"Error in infer_image for {file_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/compare")
+async def compare_models(limit: int = 20):
+    """
+    Run evaluation on both models for a fixed number of images and return comparison stats.
+    """
+    if INDEX_LIST is None or len(INDEX_LIST) == 0:
+        raise HTTPException(status_code=503, detail="Dataset not ready")
+
+    count = min(limit, len(INDEX_LIST))
+    test_subset = INDEX_LIST[:count]
+
+    results = {
+        "unet": {"mIoU": 0, "mF1": 0, "samples": 0},
+        "segformer": {"mIoU": 0, "mF1": 0, "samples": 0},
+    }
+
+    for file_id, _ in test_subset:
+        for m_name in ["unet", "segformer"]:
+            inf = await infer_image(file_id, model=m_name)
+            metrics = inf.get("metrics")
+            if metrics:
+                results[m_name]["mIoU"] += metrics["mIoU"]
+                results[m_name]["mF1"] += metrics["f1Score"]
+                results[m_name]["samples"] += 1
+
+    # Average the metrics
+    for m_name in results:
+        s = results[m_name]["samples"]
+        if s > 0:
+            results[m_name]["mIoU"] = round(results[m_name]["mIoU"] / s, 4)
+            results[m_name]["mF1"] = round(results[m_name]["mF1"] / s, 4)
+
+    return {
+        "comparison": results,
+        "winner_iou": (
+            "segformer"
+            if results["segformer"]["mIoU"] > results["unet"]["mIoU"]
+            else "unet"
+        ),
+        "winner_f1": (
+            "segformer"
+            if results["segformer"]["mF1"] > results["unet"]["mF1"]
+            else "unet"
+        ),
+        "sample_count": count,
+    }
 
 
 if __name__ == "__main__":
