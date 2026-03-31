@@ -22,11 +22,41 @@ class SAMFarmTrack(nn.Module):
 
     def forward(self, pixel_values, input_points=None, input_labels=None):
         """
-        Expects pre-processed tensors already on device.
-        - pixel_values: (B, C, H, W)
-        - input_points: (B, N, 2)
-        - input_labels: (B, N)
+        Expects:
+        - pixel_values: (B, C, H, W) tensor OR a PIL Image/list of Images.
+        - input_points: (B, P, N, 2) or (B, N, 2) tensor.
+        - input_labels: (B, P, N) or (B, N) tensor.
         """
+        device = next(self.model.parameters()).device
+
+        # If we got a PIL image (e.g. from server.py), run processor here as a convenience
+        if not isinstance(pixel_values, torch.Tensor):
+            # SAM Processor expects points as lists when processing raw images
+            # But the server passes tensors. We'll convert back to lists for processor if needed,
+            # or just rely on the processor's flexibility.
+            inputs = self.processor(
+                pixel_values, 
+                input_points=input_points.cpu().tolist() if torch.is_tensor(input_points) else input_points,
+                input_labels=input_labels.cpu().tolist() if torch.is_tensor(input_labels) else input_labels,
+                return_tensors="pt"
+            )
+            pixel_values = inputs["pixel_values"].to(device)
+            input_points = inputs["input_points"].to(device)
+            input_labels = inputs["input_labels"].to(device)
+        
+        # Ensure tensors are on correct device
+        pixel_values = pixel_values.to(device)
+        if input_points is not None:
+            input_points = input_points.to(device)
+            # Ensure 4D: (batch_size, point_batch_size, nb_points_per_image, 2)
+            if input_points.dim() == 3:
+                input_points = input_points.unsqueeze(1)
+        if input_labels is not None:
+            input_labels = input_labels.to(device)
+            # Ensure 3D: (batch_size, point_batch_size, nb_points_per_image)
+            if input_labels.dim() == 2:
+                input_labels = input_labels.unsqueeze(1)
+
         outputs = self.model(
             pixel_values=pixel_values,
             input_points=input_points,
@@ -48,5 +78,4 @@ class SAMFarmTrack(nn.Module):
         return masks
         
 if __name__ == "__main__":
-    # Note: SAM requires proper processor usage; this is a skeleton structure.
     pass
