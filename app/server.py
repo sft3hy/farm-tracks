@@ -21,6 +21,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.models.unet import UNetFarmTrack
 from src.models.segformer import SegformerFarmTrack
 from src.models.sam import SAMFarmTrack
+from app.reporting import PerformanceReportManager
+
+# Global state
+report_manager = PerformanceReportManager(data_dir="data")
+dataset_ready_event = threading.Event()
 
 # Configure logging
 logging.basicConfig(
@@ -204,6 +209,14 @@ def _load_dataset_background():
             loading_status["progress"] = total
 
         logger.info(f"Background: DONE. Found {len(INDEX_LIST)} paired fields.")
+        dataset_ready_event.set()
+        
+        # Trigger report generation if not already present
+        if report_manager.get_results() is None:
+            logger.info("Automatically starting performance report generation...")
+            # We wrap infer_image in a synchronous-looking wrapper or use asyncio
+            # In reporting.py we used asyncio.run(infer_image_func)
+            report_manager.start_report_generation(INDEX_LIST, get_model, infer_image)
     except Exception as e:
         logger.error(f"Background loading failed: {e}", exc_info=True)
         with loading_lock:
@@ -450,8 +463,13 @@ async def infer_image(file_id: str, model: str = "unet"):
                     else 0.0
                 )
 
-                metrics = {"mIoU": round(iou, 4), "f1Score": round(f1, 4)}
-                logger.info(f"Metrics for {file_id}: IoU={iou:.4f}, F1={f1:.4f}")
+                metrics = {
+                    "mIoU": round(iou, 4), 
+                    "f1Score": round(f1, 4),
+                    "precision": round(precision, 4),
+                    "recall": round(recall, 4)
+                }
+                logger.info(f"Metrics for {file_id}: IoU={iou:.4f}, F1={f1:.4f}, P={precision:.4f}, R={recall:.4f}")
 
                 gt_mask_uint8 = (gt_binary * 255).astype(np.uint8)
                 colored_gt = np.zeros(
@@ -475,53 +493,33 @@ async def infer_image(file_id: str, model: str = "unet"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/report/status")
+async def get_report_status():
+    return report_manager.get_status()
+
+@app.get("/report/results")
+async def get_report_results():
+    results = report_manager.get_results()
+    if results is None:
+        raise HTTPException(status_code=404, detail="Report results not ready or found")
+    return results
+
 @app.get("/compare")
-async def compare_models(limit: int = 20):
-    """
-    Run evaluation on both models for a fixed number of images and return comparison stats.
-    """
-    if INDEX_LIST is None or len(INDEX_LIST) == 0:
-        raise HTTPException(status_code=503, detail="Dataset not ready")
-
-    count = min(limit, len(INDEX_LIST))
-    test_subset = INDEX_LIST[:count]
-
-    results = {
-        "unet": {"mIoU": 0, "mF1": 0, "samples": 0},
-        "segformer": {"mIoU": 0, "mF1": 0, "samples": 0},
-        "sam": {"mIoU": 0, "mF1": 0, "samples": 0},
-    }
-
-    for file_id, _ in test_subset:
-        for m_name in ["unet", "segformer", "sam"]:
-            inf = await infer_image(file_id, model=m_name)
-            metrics = inf.get("metrics")
-            if metrics:
-                results[m_name]["mIoU"] += metrics["mIoU"]
-                results[m_name]["mF1"] += metrics["f1Score"]
-                results[m_name]["samples"] += 1
-
-    # Average the metrics
-    for m_name in results:
-        s = results[m_name]["samples"]
-        if s > 0:
-            results[m_name]["mIoU"] = round(results[m_name]["mIoU"] / s, 4)
-            results[m_name]["mF1"] = round(results[m_name]["mF1"] / s, 4)
-
-    return {
-        "comparison": results,
-        "winner_iou": (
-            "sam"
-            if results["sam"]["mIoU"] > results["segformer"]["mIoU"] and results["sam"]["mIoU"] > results["unet"]["mIoU"]
-            else "segformer" if results["segformer"]["mIoU"] > results["unet"]["mIoU"] else "unet"
-        ),
-        "winner_f1": (
-            "sam"
-            if results["sam"]["mF1"] > results["segformer"]["mF1"] and results["sam"]["mF1"] > results["unet"]["mF1"]
-            else "segformer" if results["segformer"]["mF1"] > results["unet"]["mF1"] else "unet"
-        ),
-        "sample_count": count,
-    }
+async def compare_models_legacy():
+    # Keep this for legacy compatibility with frontend or redirect
+    results = report_manager.get_results()
+    if results:
+        # Format results for legacy compare endpoint
+        return {
+            "comparison": results["metrics"],
+            "winner_iou": results["summary"]["winners"].get("mIoU"),
+            "winner_f1": results["summary"]["winners"].get("mF1"),
+            "sample_count": results["summary"]["sample_count"]
+        }
+    else:
+        # If not ready, return current status or error
+        status = report_manager.get_status()
+        return {"state": status["state"], "progress": status["progress"], "total": status["total"]}
 
 
 if __name__ == "__main__":

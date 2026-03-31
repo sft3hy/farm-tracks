@@ -4,8 +4,8 @@ import torch.nn as nn
 from segmentation_models_pytorch.losses import DiceLoss
 import torchvision.transforms as T
 from torch.utils.data import Dataset, DataLoader
-from datasets import load_dataset, Features, Image as HFImage, Value
 from models.sam import SAMFarmTrack
+from transformers import SamProcessor
 import os
 import numpy as np
 
@@ -14,8 +14,8 @@ class AgVisionSAMDataset(Dataset):
         self.ds = ds
         self.index_list = index_list
         self.mask_type = mask_type
-        # SAM handles its own resize/normalization via processor, 
-        # but we need to ensure the raw image is in a format SAM likes.
+        # Efficient preprocessing on CPU
+        self.processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
 
     def __len__(self):
         return len(self.index_list)
@@ -42,17 +42,24 @@ class AgVisionSAMDataset(Dataset):
             mask = np.array(mask_img.convert("L"))
             mask = (mask > 127).astype(np.float32)
 
-        # Input points and labels for SAM
+        # SAM Preprocessing
         # input_point: [[x, y]] -> shape (num_points, 2)
-        # input_label: [1] -> shape (num_points,) -> 1 for foreground
-        input_point = [[256, 256]] 
-        input_label = [1]
+        input_point = [[[256, 256]]] 
+        input_label = [[1]]
         
+        inputs = self.processor(
+            image, 
+            input_points=input_point, 
+            input_labels=input_label, 
+            return_tensors="pt"
+        )
+        
+        # Squeeze the batch dimension added by the processor since DataLoader will add it back
         return {
-            "image": image, # (H, W, 3)
-            "mask": torch.from_numpy(mask).unsqueeze(0), # (1, H, W)
-            "input_points": torch.tensor(input_point, dtype=torch.float32), # (1, 2)
-            "input_labels": torch.tensor(input_label, dtype=torch.long)    # (1,)
+            "pixel_values": inputs["pixel_values"].squeeze(0),
+            "input_points": inputs["input_points"].squeeze(0),
+            "input_labels": inputs["input_labels"].squeeze(0),
+            "mask": torch.from_numpy(mask).unsqueeze(0) # (1, H, W)
         }
 
 class SAMFarmTrackModule(pl.LightningModule):
@@ -64,28 +71,12 @@ class SAMFarmTrackModule(pl.LightningModule):
         self.bce_loss = nn.BCEWithLogitsLoss()
 
     def training_step(self, batch, batch_idx):
-        # Extract images, points and labels from batch
-        # DataLoader will collate these into tensors/lists
-        pixel_values = []
-        for i in range(len(batch["image"])):
-            img = batch["image"][i].cpu().numpy() if torch.is_tensor(batch["image"][i]) else batch["image"][i]
-            pixel_values.append(img)
-            
+        pixel_values = batch["pixel_values"]
         points = batch["input_points"]
         labels = batch["input_labels"]
         
         # Forward pass through the model's adapter
         logits = self.model(pixel_values, input_points=points, input_labels=labels) 
-        # logits shape: [B, 3, H, W] or [B, 1, H, W] depending on SAM output
-        # SAM usually outputs 3 masks (multimask_output=True by default)
-        
-        # Just take the first mask for simplicity in this baseline
-        # Expected logits shape: [B, C, H, W] where C is num_masks (usually 3)
-        if logits.dim() == 4 and logits.shape[1] > 1:
-            logits = logits[:, 0:1, :, :]
-        elif logits.dim() == 3:
-            # If (B, H, W), add channel dim
-            logits = logits.unsqueeze(1)
             
         # Target mask resize to match logits if necessary
         y = batch["mask"]
@@ -93,12 +84,25 @@ class SAMFarmTrackModule(pl.LightningModule):
             logits = nn.functional.interpolate(logits, size=y.shape[-2:], mode="bilinear")
 
         loss = self.loss_fn(logits, y) + self.bce_loss(logits, y)
-        self.log("train_loss", loss, prog_bar=True)
+        self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        pixel_values = batch["pixel_values"]
+        points = batch["input_points"]
+        labels = batch["input_labels"]
+        
+        logits = self.model(pixel_values, input_points=points, input_labels=labels)
+        
+        y = batch["mask"]
+        if logits.shape[-2:] != y.shape[-2:]:
+            logits = nn.functional.interpolate(logits, size=y.shape[-2:], mode="bilinear")
+            
+        loss = self.loss_fn(logits, y) + self.bce_loss(logits, y)
+        self.log("val_loss", loss, prog_bar=True)
         return loss
 
     def configure_optimizers(self):
-        # Only optimize the mask decoder (as specified in sam.py adapter)
-        # However, SAMFarmTrack freezes vision/prompt encoders in __init__.
         return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
 
 if __name__ == "__main__":
@@ -107,18 +111,29 @@ if __name__ == "__main__":
     except ImportError:
         from src.train import FarmTrackDataModule
     
-    # We need to ensure we use the specialized SAM dataset
     class SAMDataModule(FarmTrackDataModule):
         def train_dataloader(self):
-            return DataLoader(AgVisionSAMDataset(self.ds, self.train_idx, self.mask_type), 
-                              batch_size=2, shuffle=True, num_workers=2) # SAM is heavy
+            return DataLoader(
+                AgVisionSAMDataset(self.ds, self.train_idx, self.mask_type), 
+                batch_size=16, 
+                shuffle=True, 
+                num_workers=4,
+                pin_memory=True,
+                persistent_workers=True
+            )
         def val_dataloader(self):
-            return DataLoader(AgVisionSAMDataset(self.ds, self.val_idx, self.mask_type), 
-                              batch_size=2, shuffle=False, num_workers=2)
+            return DataLoader(
+                AgVisionSAMDataset(self.ds, self.val_idx, self.mask_type), 
+                batch_size=16, 
+                shuffle=False, 
+                num_workers=4,
+                pin_memory=True,
+                persistent_workers=True
+            )
 
     os.makedirs("models/weights", exist_ok=True)
     module = SAMFarmTrackModule()
-    datamodule = SAMDataModule(batch_size=2)
+    datamodule = SAMDataModule(batch_size=16)
     
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath="models/weights/",
@@ -128,14 +143,15 @@ if __name__ == "__main__":
     )
 
     trainer = pl.Trainer(
-        max_epochs=5, # SAM fine-tuning is faster to converge
+        max_epochs=5,
         callbacks=[checkpoint_callback],
         accelerator="cuda" if torch.cuda.is_available() else "auto",
         devices=1,
-        precision="16-mixed", # T4 optimization
+        precision="16-mixed",
+        log_every_n_steps=5,
     )
     
-    print("🚀 Starting CUDA SAM Training (Fine-tuning Mask Decoder)...")
+    print("🚀 Starting OPTIMIZED CUDA SAM Training...")
     trainer.fit(module, datamodule=datamodule)
     
     final_path = "models/weights/sam_farmtrack_final.pth"
