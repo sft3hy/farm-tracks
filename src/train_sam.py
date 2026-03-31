@@ -12,58 +12,7 @@ import numpy as np
 # Optimize CUDA memory allocation to prevent fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-class AgVisionSAMDataset(Dataset):
-    def __init__(self, ds, index_list, mask_type="planter_skip"):
-        self.ds = ds
-        self.index_list = index_list
-        self.mask_type = mask_type
-        # Efficient preprocessing on CPU
-        self.processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
-
-    def __len__(self):
-        return len(self.index_list)
-
-    def __getitem__(self, idx):
-        file_id, mapping = self.index_list[idx]
-        
-        # Load RGB
-        rgb_idx = mapping.get("rgb")
-        if rgb_idx is None:
-            image = np.zeros((512, 512, 3), dtype=np.uint8)
-        else:
-            sample = self.ds[rgb_idx]
-            img = sample.get("jpg") or sample.get("png")
-            image = np.array(img.convert("RGB"))
-
-        # Load Mask
-        mask_idx = mapping.get(self.mask_type)
-        if mask_idx is None:
-            mask = np.zeros((512, 512), dtype=np.float32)
-        else:
-            mask_sample = self.ds[mask_idx]
-            mask_img = mask_sample.get("png")
-            mask = np.array(mask_img.convert("L"))
-            mask = (mask > 127).astype(np.float32)
-
-        # SAM Preprocessing
-        # input_point: [[x, y]] -> shape (num_points, 2)
-        input_point = [[[256, 256]]] 
-        input_label = [[1]]
-        
-        inputs = self.processor(
-            image, 
-            input_points=input_point, 
-            input_labels=input_label, 
-            return_tensors="pt"
-        )
-        
-        # Squeeze the batch dimension added by the processor since DataLoader will add it back
-        return {
-            "pixel_values": inputs["pixel_values"].squeeze(0),
-            "input_points": inputs["input_points"].squeeze(0),
-            "input_labels": inputs["input_labels"].squeeze(0),
-            "mask": torch.from_numpy(mask).unsqueeze(0) # (1, H, W)
-        }
+from data.ag_vision import FarmTrackDataModule, AgVisionSAMDataset
 
 class SAMFarmTrackModule(pl.LightningModule):
     def __init__(self, learning_rate=1e-5):
@@ -109,10 +58,9 @@ class SAMFarmTrackModule(pl.LightningModule):
         return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
 
 if __name__ == "__main__":
-    try:
-        from train import FarmTrackDataModule
-    except ImportError:
-        from src.train import FarmTrackDataModule
+    import sys
+    # Add project root to sys.path if needed
+    # (Optional: depends on how you run the script)
     
     class SAMDataModule(FarmTrackDataModule):
         def train_dataloader(self):
