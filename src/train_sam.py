@@ -118,7 +118,7 @@ if __name__ == "__main__":
         def train_dataloader(self):
             return DataLoader(
                 AgVisionSAMDataset(self.ds, self.train_idx, self.mask_type), 
-                batch_size=4, 
+                batch_size=8, 
                 shuffle=True, 
                 num_workers=4,
                 pin_memory=True,
@@ -127,7 +127,7 @@ if __name__ == "__main__":
         def val_dataloader(self):
             return DataLoader(
                 AgVisionSAMDataset(self.ds, self.val_idx, self.mask_type), 
-                batch_size=4, 
+                batch_size=8, 
                 shuffle=False, 
                 num_workers=4,
                 pin_memory=True,
@@ -136,7 +136,7 @@ if __name__ == "__main__":
 
     os.makedirs("models/weights", exist_ok=True)
     module = SAMFarmTrackModule()
-    datamodule = SAMDataModule(batch_size=4)
+    datamodule = SAMDataModule(batch_size=8)
     
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath="models/weights/",
@@ -151,7 +151,7 @@ if __name__ == "__main__":
         accelerator="cuda" if torch.cuda.is_available() else "auto",
         devices=1,
         precision="16-mixed",
-        accumulate_grad_batches=4, # Effective batch size 4 * 4 = 16
+        accumulate_grad_batches=2, # Effective batch size 8 * 2 = 16
         log_every_n_steps=5,
     )
     
