@@ -9,6 +9,9 @@ from transformers import SamProcessor
 import os
 import numpy as np
 
+# Optimize CUDA memory allocation to prevent fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 class AgVisionSAMDataset(Dataset):
     def __init__(self, ds, index_list, mask_type="planter_skip"):
         self.ds = ds
@@ -115,7 +118,7 @@ if __name__ == "__main__":
         def train_dataloader(self):
             return DataLoader(
                 AgVisionSAMDataset(self.ds, self.train_idx, self.mask_type), 
-                batch_size=16, 
+                batch_size=4, 
                 shuffle=True, 
                 num_workers=4,
                 pin_memory=True,
@@ -124,7 +127,7 @@ if __name__ == "__main__":
         def val_dataloader(self):
             return DataLoader(
                 AgVisionSAMDataset(self.ds, self.val_idx, self.mask_type), 
-                batch_size=16, 
+                batch_size=4, 
                 shuffle=False, 
                 num_workers=4,
                 pin_memory=True,
@@ -133,7 +136,7 @@ if __name__ == "__main__":
 
     os.makedirs("models/weights", exist_ok=True)
     module = SAMFarmTrackModule()
-    datamodule = SAMDataModule(batch_size=16)
+    datamodule = SAMDataModule(batch_size=4)
     
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath="models/weights/",
@@ -148,6 +151,7 @@ if __name__ == "__main__":
         accelerator="cuda" if torch.cuda.is_available() else "auto",
         devices=1,
         precision="16-mixed",
+        accumulate_grad_batches=4, # Effective batch size 4 * 4 = 16
         log_every_n_steps=5,
     )
     

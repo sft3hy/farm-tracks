@@ -504,6 +504,36 @@ async def get_report_results():
         raise HTTPException(status_code=404, detail="Report results not ready or found")
     return results
 
+@app.get("/training-explanation/{model}")
+async def get_training_explanation(model: str):
+    """Serve the training documentation for a specific model."""
+    try:
+        model = model.lower()
+        if model not in ["unet", "segformer", "sam"]:
+            raise HTTPException(status_code=404, detail="Model documentation not found")
+        
+        file_path = os.path.abspath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "..",
+                "src",
+                "models",
+                "training-explanation",
+                f"train_{model}.md"
+            )
+        )
+        
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail=f"Documentation file not found: {file_path}")
+            
+        with open(file_path, "r") as f:
+            content = f.read()
+        return {"content": content}
+    except Exception as e:
+        logger.error(f"Error serving documentation for {model}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/compare")
 async def compare_models_legacy():
     # Keep this for legacy compatibility with frontend or redirect
