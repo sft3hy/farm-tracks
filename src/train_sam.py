@@ -103,8 +103,17 @@ if __name__ == "__main__":
         log_every_n_steps=5,
     )
     
+    import glob
+    checkpoint_dir = "models/weights/"
+    checkpoints = glob.glob(os.path.join(checkpoint_dir, "*.ckpt"))
+    latest_checkpoint = max(checkpoints, key=os.path.getmtime) if checkpoints else None
+
     print("🚀 Starting OPTIMIZED CUDA SAM Training...")
-    trainer.fit(module, datamodule=datamodule)
+    if latest_checkpoint:
+        print(f"🔄 Resuming from checkpoint: {latest_checkpoint}")
+        trainer.fit(module, datamodule=datamodule, ckpt_path=latest_checkpoint)
+    else:
+        trainer.fit(module, datamodule=datamodule)
     
     final_path = "models/weights/sam_farmtrack_final.pth"
     torch.save(module.model.state_dict(), final_path)
