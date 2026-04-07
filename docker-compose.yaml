@@ -23,6 +23,7 @@ services:
       - ./src:/app/src
       - ./app:/app/app
       - ./models:/app/models
+      - ./data:/app/data
       - /Users/samueltownsend/.cache/huggingface:/root/.cache/huggingface
     environment:
       - PYTHONUNBUFFERED=1

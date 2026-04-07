@@ -1,0 +1,12 @@
+# Segformer PyTorch Pipeline with A100/DeepSpeed Optimizations
+torch>=2.0.0
+torchvision
+pytorch-lightning
+deepspeed>=0.10.0
+transformers
+datasets
+segmentation-models-pytorch
+huggingface_hub
+Pillow
+numpy
+tqdm

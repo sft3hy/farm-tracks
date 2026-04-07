@@ -40,9 +40,9 @@ class SAMFarmTrack(nn.Module):
                 input_labels=input_labels.cpu().tolist() if torch.is_tensor(input_labels) else input_labels,
                 return_tensors="pt"
             )
-            pixel_values = inputs["pixel_values"].to(device)
-            input_points = inputs["input_points"].to(device)
-            input_labels = inputs["input_labels"].to(device)
+            pixel_values = inputs["pixel_values"].float().to(device)
+            input_points = inputs["input_points"].float().to(device)
+            input_labels = inputs["input_labels"].float().to(device)
         
         # Ensure tensors are on correct device
         pixel_values = pixel_values.to(device)

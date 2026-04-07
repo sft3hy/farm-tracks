@@ -1,6 +1,6 @@
 # Training SAM (Segment Anything Model)
 
-This document describes the training and fine-tuning process for the Segment Anything Model (SAM) adapter used in FarmTrack Analytics.
+Training and fine-tuning process for the Segment Anything Model (SAM) adapter used in FarmTrack Analytics
 
 ## Overview
 

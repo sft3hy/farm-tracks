@@ -21,10 +21,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.models.unet import UNetFarmTrack
 from src.models.segformer import SegformerFarmTrack
 from src.models.sam import SAMFarmTrack
-from app.reporting import PerformanceReportManager
+from app.reporting import BenchmarkReportManager
 
 # Global state
-report_manager = PerformanceReportManager(data_dir="data")
+report_manager = BenchmarkReportManager(data_dir="data")
 dataset_ready_event = threading.Event()
 
 # Configure logging
@@ -210,13 +210,6 @@ def _load_dataset_background():
 
         logger.info(f"Background: DONE. Found {len(INDEX_LIST)} paired fields.")
         dataset_ready_event.set()
-        
-        # Trigger report generation if not already present
-        if report_manager.get_results() is None:
-            logger.info("Automatically starting performance report generation...")
-            # We wrap infer_image in a synchronous-looking wrapper or use asyncio
-            # In reporting.py we used asyncio.run(infer_image_func)
-            report_manager.start_report_generation(INDEX_LIST, get_model, infer_image)
     except Exception as e:
         logger.error(f"Background loading failed: {e}", exc_info=True)
         with loading_lock:
@@ -255,6 +248,18 @@ def get_model(name: str = "unet"):
                 )
             )
             model_label = "SegformerFarmTrack"
+        elif name == "segformer_b4":
+            m = SegformerFarmTrack(pretrained_model_name="nvidia/mit-b4")
+            weights_path = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "models",
+                    "weights",
+                    "segformer_b4_farmtrack_final.pth",
+                )
+            )
+            model_label = "SegformerFarmTrack-B4"
         elif name == "sam":
             m = SAMFarmTrack()
             weights_path = os.path.abspath(
@@ -499,17 +504,34 @@ async def get_report_status():
 
 @app.get("/report/results")
 async def get_report_results():
-    results = report_manager.get_results()
-    if results is None:
-        raise HTTPException(status_code=404, detail="Report results not ready or found")
-    return results
+    """Return the full benchmark report."""
+    report = report_manager.get_report()
+    if report is None:
+        raise HTTPException(status_code=404, detail="No benchmark report found. Run: python src/run_benchmark.py")
+    return report
+
+@app.get("/report/summary")
+async def get_report_summary():
+    """Lightweight summary for the frontend cards."""
+    summary = report_manager.get_summary()
+    if summary is None:
+        raise HTTPException(status_code=404, detail="No benchmark report found.")
+    return summary
+
+@app.get("/report/histograms")
+async def get_report_histograms():
+    """Histogram data for IoU and F1 distributions."""
+    histograms = report_manager.get_histograms()
+    if histograms is None:
+        raise HTTPException(status_code=404, detail="No benchmark report found.")
+    return histograms
 
 @app.get("/training-explanation/{model}")
 async def get_training_explanation(model: str):
     """Serve the training documentation for a specific model."""
     try:
         model = model.lower()
-        if model not in ["unet", "segformer", "sam"]:
+        if model not in ["unet", "segformer", "segformer_b4", "sam"]:
             raise HTTPException(status_code=404, detail="Model documentation not found")
         
         file_path = os.path.abspath(
@@ -536,20 +558,11 @@ async def get_training_explanation(model: str):
 
 @app.get("/compare")
 async def compare_models_legacy():
-    # Keep this for legacy compatibility with frontend or redirect
-    results = report_manager.get_results()
-    if results:
-        # Format results for legacy compare endpoint
-        return {
-            "comparison": results["metrics"],
-            "winner_iou": results["summary"]["winners"].get("mIoU"),
-            "winner_f1": results["summary"]["winners"].get("mF1"),
-            "sample_count": results["summary"]["sample_count"]
-        }
-    else:
-        # If not ready, return current status or error
-        status = report_manager.get_status()
-        return {"state": status["state"], "progress": status["progress"], "total": status["total"]}
+    """Legacy compatibility endpoint — redirects to benchmark summary."""
+    summary = report_manager.get_summary()
+    if summary:
+        return summary
+    return {"state": "not_available"}
 
 
 if __name__ == "__main__":

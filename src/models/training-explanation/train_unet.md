@@ -1,6 +1,6 @@
 # Training U-Net (Convolutional Encoder-Decoder)
 
-This document describes the training process for the PyTorch U-Net model used in FarmTrack Analytics.
+Training process for the PyTorch U-Net model used in FarmTrack Analytics
 
 ## Overview
 
@@ -30,6 +30,8 @@ The training script `src/train_unet.py` implements a standard convolutional appr
 ## Output
 
 The final weights are saved to `models/weights/unet_farmtrack_final.pth`. These weights contain only the state dict for the UNet model.
+
+Model size: 97.9MB
 
 ## How to Run
 

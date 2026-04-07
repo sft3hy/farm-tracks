@@ -1,6 +1,6 @@
 # Training SegFormer (Segmenter Transformer)
 
-This document describes the training process for the SegFormer model used in FarmTrack Analytics.
+Training process for the SegFormer model used in FarmTrack Analytics
 
 ## Overview
 
@@ -30,6 +30,8 @@ The training script `src/train_segformer.py` utilizes the Hugging Face `transfor
 ## Output
 
 The final weights are saved to `models/weights/segformer_farmtrack_final.pth`. These weights contain only the state dict for the Segformer model.
+
+Model size: 14.9 MB
 
 ## How to Run
 
